@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# VEILOS - Phase 1 build (Debian Stable + GNOME, Arabic/English)
+# VEILOS - Phase 1 + 2 build (Debian Stable + GNOME, Arabic/English)
 # Run on Debian/Ubuntu:  chmod +x build-phase1.sh && ./build-phase1.sh
 # License: GPL-3
 set -euo pipefail
@@ -42,6 +42,11 @@ apt-listchanges
 apparmor
 apparmor-profiles
 nftables
+systemd-resolved
+pkexec
+polkitd
+dconf-cli
+apparmor-utils
 EOF
 
 # Telemetry: make sure popularity-contest is never installed
@@ -72,6 +77,164 @@ EOF
 for f in ../logo.jpg ../assets/logo.jpg; do
   [ -f "$f" ] && cp "$f" config/includes.chroot/usr/share/veilos/logo.jpg && break
 done
+
+# ================= PHASE 2: hardening & privacy =================
+
+# --- Kernel / network hardening ---
+mkdir -p config/includes.chroot/etc/sysctl.d
+cat > config/includes.chroot/etc/sysctl.d/99-veilos-hardening.conf <<'EOF'
+kernel.kptr_restrict = 2
+kernel.dmesg_restrict = 1
+kernel.unprivileged_bpf_disabled = 1
+net.core.bpf_jit_harden = 2
+kernel.yama.ptrace_scope = 1
+kernel.randomize_va_space = 2
+fs.protected_hardlinks = 1
+fs.protected_symlinks = 1
+fs.protected_fifos = 2
+fs.protected_regular = 2
+net.ipv4.tcp_syncookies = 1
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv6.conf.all.accept_redirects = 0
+net.ipv6.conf.default.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv6.conf.all.accept_source_route = 0
+EOF
+
+mkdir -p config/includes.chroot/etc/modprobe.d
+cat > config/includes.chroot/etc/modprobe.d/veilos-blacklist.conf <<'EOF'
+install dccp /bin/false
+install sctp /bin/false
+install rds /bin/false
+install tipc /bin/false
+install firewire-core /bin/false
+EOF
+
+# --- Firewall: block all incoming by default ---
+cat > config/includes.chroot/etc/nftables.conf <<'EOF'
+#!/usr/sbin/nft -f
+flush ruleset
+table inet filter {
+  chain input {
+    type filter hook input priority filter; policy drop;
+    iif lo accept
+    ct state established,related accept
+    ct state invalid drop
+    ip protocol icmp accept
+    ip6 nexthdr icmpv6 accept
+    udp sport 67 udp dport 68 accept
+    udp sport 547 udp dport 546 accept
+  }
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+  }
+  chain output {
+    type filter hook output priority filter; policy accept;
+  }
+}
+EOF
+
+# --- Quad9 encrypted DNS (DNS-over-TLS), on by default, with on/off switch ---
+mkdir -p config/includes.chroot/usr/share/veilos \
+         config/includes.chroot/etc/systemd/resolved.conf.d \
+         config/includes.chroot/etc/tmpfiles.d \
+         config/includes.chroot/usr/local/bin \
+         config/includes.chroot/usr/share/applications
+
+cat > config/includes.chroot/usr/share/veilos/quad9.conf <<'EOF'
+[Resolve]
+DNS=9.9.9.9#dns.quad9.net 149.112.112.112#dns.quad9.net 2620:fe::fe#dns.quad9.net 2620:fe::9#dns.quad9.net
+Domains=~.
+DNSOverTLS=yes
+DNSSEC=allow-downgrade
+FallbackDNS=
+EOF
+cp config/includes.chroot/usr/share/veilos/quad9.conf \
+   config/includes.chroot/etc/systemd/resolved.conf.d/10-veilos-quad9.conf
+
+# make /etc/resolv.conf point to systemd-resolved at every boot
+cat > config/includes.chroot/etc/tmpfiles.d/veilos-resolv.conf <<'EOF'
+L+ /etc/resolv.conf - - - - /run/systemd/resolve/stub-resolv.conf
+EOF
+
+cat > config/includes.chroot/usr/local/bin/veilos-dns <<'EOF'
+#!/bin/sh
+# Usage: veilos-dns on|off|status   (run as root)
+DEST=/etc/systemd/resolved.conf.d/10-veilos-quad9.conf
+SRC=/usr/share/veilos/quad9.conf
+case "$1" in
+  on)  mkdir -p /etc/systemd/resolved.conf.d && cp "$SRC" "$DEST" \
+         && systemctl restart systemd-resolved && echo "Quad9 DNS: ON" ;;
+  off) rm -f "$DEST" && systemctl restart systemd-resolved && echo "Quad9 DNS: OFF" ;;
+  status) if [ -f "$DEST" ]; then echo "Quad9 DNS: ON"; else echo "Quad9 DNS: OFF"; fi ;;
+  *) echo "usage: veilos-dns on|off|status"; exit 1 ;;
+esac
+EOF
+chmod +x config/includes.chroot/usr/local/bin/veilos-dns
+
+cat > config/includes.chroot/usr/share/applications/veilos-dns-on.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Quad9 DNS: Enable
+Name[ar]=Quad9 DNS: تفعيل
+Exec=pkexec /usr/local/bin/veilos-dns on
+Icon=network-wired
+Categories=Network;Settings;
+EOF
+
+cat > config/includes.chroot/usr/share/applications/veilos-dns-off.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Quad9 DNS: Disable
+Name[ar]=Quad9 DNS: إيقاف
+Exec=pkexec /usr/local/bin/veilos-dns off
+Icon=network-offline
+Categories=Network;Settings;
+EOF
+
+# --- GNOME privacy defaults, screen lock, keyboard layouts ---
+mkdir -p config/includes.chroot/etc/dconf/profile config/includes.chroot/etc/dconf/db/local.d
+printf 'user-db:user\nsystem-db:local\n' > config/includes.chroot/etc/dconf/profile/user
+cat > config/includes.chroot/etc/dconf/db/local.d/00-veilos <<'EOF'
+[org/gnome/desktop/privacy]
+report-technical-problems=false
+send-software-usage-stats=false
+
+[org/gnome/system/location]
+enabled=false
+
+[org/gnome/desktop/screensaver]
+lock-enabled=true
+lock-delay=uint32 0
+
+[org/gnome/desktop/session]
+idle-delay=uint32 300
+
+[org/gnome/desktop/input-sources]
+sources=[('xkb', 'us'), ('xkb', 'ara')]
+xkb-options=['grp:alt_shift_toggle']
+EOF
+
+# --- Hook: enable services, apply dconf, disable network-discovery services ---
+cat > config/hooks/normal/0200-hardening.hook.chroot <<'EOF'
+#!/bin/sh
+dconf update || true
+systemctl enable nftables apparmor systemd-resolved unattended-upgrades 2>/dev/null || true
+systemctl disable avahi-daemon cups-browsed 2>/dev/null || true
+EOF
+
+# --- Installer: hardened kernel parameters, no popularity-contest ---
+mkdir -p config/includes.installer
+cat > config/includes.installer/preseed.cfg <<'EOF'
+d-i debian-installer/add-kernel-opts string slab_nomerge init_on_alloc=1 page_alloc.shuffle=1 randomize_kstack_offset=on vsyscall=none debugfs=off
+popularity-contest popularity-contest/participate boolean false
+EOF
+
+# ================= end of phase 2 =================
 
 sudo lb build 2>&1 | tee build.log
 echo "Done. ISO: $(ls *.iso 2>/dev/null)"
