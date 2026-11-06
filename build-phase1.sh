@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# VEILOS - Phase 1 + 2 + 3a build (Debian Stable + GNOME, Arabic/English)
+# VEILOS - Phase 1 + 2 + 3a + 3b build (Debian Stable + GNOME, Arabic/English)
 # Run on Debian/Ubuntu:  chmod +x build-phase1.sh && ./build-phase1.sh
 # License: GPL-3
 set -euo pipefail
@@ -50,6 +50,9 @@ apparmor-utils
 clamav
 clamav-daemon
 clamav-freshclam
+curl
+ca-certificates
+gnome-shell-extension-appindicator
 EOF
 
 # Telemetry: make sure popularity-contest is never installed
@@ -256,6 +259,7 @@ EOF
 cat > config/includes.chroot/etc/apt/apt.conf.d/52veilos-unattended <<'EOF'
 Unattended-Upgrade::Origins-Pattern {
   "site=repo.librewolf.net";
+  "site=repo.protonvpn.com";
 };
 EOF
 
@@ -270,7 +274,7 @@ EOF
 
 cat > config/includes.chroot/etc/dconf/db/local.d/01-veilos-apps <<'EOF'
 [org/gnome/shell]
-favorite-apps=['librewolf.desktop', 'org.gnome.Nautilus.desktop', 'vlc.desktop', 'libreoffice-startcenter.desktop', 'org.gnome.Software.desktop']
+favorite-apps=['librewolf.desktop', 'org.gnome.Nautilus.desktop', 'vlc.desktop', 'io.freetubeapp.FreeTube.desktop', 'org.standardnotes.standardnotes.desktop', 'libreoffice-startcenter.desktop', 'org.gnome.Software.desktop']
 EOF
 
 # --- ClamAV with real-time (on-access) scanning ---
@@ -310,5 +314,70 @@ chmod +x config/hooks/normal/*.hook.chroot
 
 # ================= end of phase 3 (batch 1) =================
 
+# ================= PHASE 3 (batch 2): Proton VPN, FreeTube, Standard Notes =================
+
+# --- Proton VPN from Proton's official apt repository ---
+cat > config/hooks/normal/0400-protonvpn.hook.chroot <<'EOF'
+#!/bin/sh
+V=$(curl -fsSL https://repo.protonvpn.com/debian/dists/stable/main/binary-all/ 2>/dev/null \
+    | grep -o 'protonvpn-stable-release_[0-9.]*_all\.deb' | sort -uV | tail -1)
+[ -z "$V" ] && V=protonvpn-stable-release_1.0.10_all.deb
+echo "Proton VPN release package: $V"
+curl -fsSL -o /tmp/protonvpn-release.deb \
+  "https://repo.protonvpn.com/debian/dists/stable/main/binary-all/$V" \
+  && dpkg -i /tmp/protonvpn-release.deb \
+  && apt-get update \
+  && apt-get install -y proton-vpn-gnome-desktop \
+  || echo "VEILOS-WARN: Proton VPN install failed"
+rm -f /tmp/protonvpn-release.deb
+EOF
+
+# --- FreeTube + Standard Notes from Flathub (Flatpak) ---
+cat > config/hooks/normal/0500-flatpak-apps.hook.chroot <<'EOF'
+#!/bin/sh
+flatpak remote-add --if-not-exists --system flathub https://dl.flathub.org/repo/flathub.flatpakrepo \
+  || echo "VEILOS-WARN: could not add Flathub"
+flatpak install --system -y --noninteractive flathub \
+  io.freetubeapp.FreeTube \
+  org.standardnotes.standardnotes \
+  || echo "VEILOS-WARN: Flatpak apps (FreeTube / Standard Notes) install failed"
+EOF
+
+# automatic Flatpak updates (boot + daily)
+cat > config/includes.chroot/etc/systemd/system/veilos-flatpak-update.service <<'EOF'
+[Unit]
+Description=Update Flatpak apps
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/flatpak update --system -y --noninteractive
+EOF
+
+cat > config/includes.chroot/etc/systemd/system/veilos-flatpak-update.timer <<'EOF'
+[Unit]
+Description=Daily Flatpak app updates
+
+[Timer]
+OnBootSec=10min
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target
+EOF
+
+cat > config/hooks/normal/0600-enable-timers.hook.chroot <<'EOF'
+#!/bin/sh
+systemctl enable veilos-flatpak-update.timer || true
+EOF
+
+chmod +x config/hooks/normal/*.hook.chroot
+
+# ================= end of phase 3 (batch 2) =================
+
 sudo lb build 2>&1 | tee build.log
+grep -h "VEILOS-WARN" build.log || echo "No VEILOS-WARN: all app installs reported OK"
 echo "Done. ISO: $(ls *.iso 2>/dev/null)"
