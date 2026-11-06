@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# VEILOS - Phase 1 + 2 + 3a + 3b + 3c + 3d build (Debian Stable + GNOME, Arabic/English)
+# VEILOS - Phase 1 + 2 + 3a + 3b + 3c + 3d + 4 build (Debian Stable + GNOME, Arabic/English)
 # Run on Debian/Ubuntu:  chmod +x build-phase1.sh && ./build-phase1.sh
 # License: GPL-3
 set -euo pipefail
@@ -498,6 +498,28 @@ EOF
 chmod +x config/hooks/normal/*.hook.chroot
 
 # ================= end of phase 3 (batch 4) =================
+
+# ================= PHASE 4: branding (wallpaper + logo) =================
+mkdir -p config/includes.chroot/usr/share/backgrounds/veilos config/includes.chroot/usr/share/pixmaps
+for f in ../veilos-wallpaper.png ../branding/wallpaper.png; do
+  [ -f "$f" ] && cp "$f" config/includes.chroot/usr/share/backgrounds/veilos/wallpaper.png && break
+done
+for f in ../veilos-logo.png ../branding/logo.png; do
+  [ -f "$f" ] && cp "$f" config/includes.chroot/usr/share/pixmaps/veilos-logo.png && break
+done
+cat > config/includes.chroot/etc/dconf/db/local.d/02-veilos-background <<'EOF'
+[org/gnome/desktop/background]
+picture-uri='file:///usr/share/backgrounds/veilos/wallpaper.png'
+picture-uri-dark='file:///usr/share/backgrounds/veilos/wallpaper.png'
+picture-options='zoom'
+primary-color='#0d0e15'
+
+[org/gnome/desktop/screensaver]
+picture-uri='file:///usr/share/backgrounds/veilos/wallpaper.png'
+picture-options='zoom'
+primary-color='#0d0e15'
+EOF
+# ================= end of phase 4 =================
 
 sudo lb build 2>&1 | tee build.log
 grep -h "VEILOS-WARN" build.log || echo "No VEILOS-WARN: all app installs reported OK"
