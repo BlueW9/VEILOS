@@ -1,0 +1,131 @@
+
+name: VEILOS BIOS and UEFI Boot Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "GitHub build run ID"
+        required: true
+        default: "42198705327"
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  boot-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Install QEMU and UEFI firmware
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            qemu-system-x86 \
+            ovmf \
+            socat
+
+      - name: Download VEILOS ISO
+        uses: actions/download-artifact@v4
+        with:
+          name: veilos-iso
+          repository: BlueW9/VEILOS
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          path: iso-files
+
+      - name: Locate ISO
+        id: iso
+        run: |
+          ISO=$(find iso-files -type f -iname '*.iso' | head -n 1)
+          if [ -z "$ISO" ]; then
+            echo "ISO file not found"
+            exit 1
+          fi
+          echo "path=$ISO" >> "$GITHUB_OUTPUT"
+          ls -lh "$ISO"
+
+      - name: Test BIOS boot
+        run: |
+          mkdir -p results
+
+          qemu-system-x86_64 \
+            -m 2048 \
+            -smp 2 \
+            -cdrom "${{ steps.iso.outputs.path }}" \
+            -boot order=d \
+            -display none \
+            -monitor unix:/tmp/bios.sock,server,nowait \
+            -serial file:results/bios-serial.log \
+            -no-reboot &
+          
+          PID=$!
+          sleep 45
+
+          if kill -0 "$PID" 2>/dev/null; then
+            echo "QEMU BIOS remained running for 45 seconds"
+            echo "BIOS_QEMU_STARTED" > results/bios-status.txt
+            echo "screendump results/bios-screen.ppm" |
+              socat - UNIX-CONNECT:/tmp/bios.sock || true
+          else
+            echo "QEMU BIOS exited early"
+            echo "BIOS_EARLY_EXIT" > results/bios-status.txt
+          fi
+
+          kill "$PID" 2>/dev/null || true
+          wait "$PID" 2>/dev/null || true
+
+      - name: Test UEFI boot
+        run: |
+          CODE=$(find /usr/share/OVMF -name 'OVMF_CODE_4M.fd' | head -n 1)
+          VARS=$(find /usr/share/OVMF -name 'OVMF_VARS_4M.fd' | head -n 1)
+
+          if [ -z "$CODE" ] || [ -z "$VARS" ]; then
+            CODE=$(find /usr/share/OVMF -name 'OVMF_CODE.fd' | head -n 1)
+            VARS=$(find /usr/share/OVMF -name 'OVMF_VARS.fd' | head -n 1)
+          fi
+
+          if [ -z "$CODE" ] || [ -z "$VARS" ]; then
+            echo "OVMF firmware not found"
+            exit 1
+          fi
+
+          cp "$VARS" /tmp/uefi-vars.fd
+
+          qemu-system-x86_64 \
+            -m 2048 \
+            -smp 2 \
+            -drive if=pflash,format=raw,readonly=on,file="$CODE" \
+            -drive if=pflash,format=raw,file=/tmp/uefi-vars.fd \
+            -cdrom "${{ steps.iso.outputs.path }}" \
+            -boot order=d \
+            -display none \
+            -monitor unix:/tmp/uefi.sock,server,nowait \
+            -serial file:results/uefi-serial.log \
+            -no-reboot &
+          
+          PID=$!
+          sleep 45
+
+          if kill -0 "$PID" 2>/dev/null; then
+            echo "QEMU UEFI remained running for 45 seconds"
+            echo "UEFI_QEMU_STARTED" > results/uefi-status.txt
+            echo "screendump results/uefi-screen.ppm" |
+              socat - UNIX-CONNECT:/tmp/uefi.sock || true
+          else
+            echo "QEMU UEFI exited early"
+            echo "UEFI_EARLY_EXIT" > results/uefi-status.txt
+          fi
+
+          kill "$PID" 2>/dev/null || true
+          wait "$PID" 2>/dev/null || true
+
+      - name: Upload boot test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VEILOS-boot-test-results
+          path: results/
+          if-no-files-found: warn
