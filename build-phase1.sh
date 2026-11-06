@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# VEILOS - Phase 1 + 2 + 3a + 3b build (Debian Stable + GNOME, Arabic/English)
+# VEILOS - Phase 1 + 2 + 3a + 3b + 3c + 3d build (Debian Stable + GNOME, Arabic/English)
 # Run on Debian/Ubuntu:  chmod +x build-phase1.sh && ./build-phase1.sh
 # License: GPL-3
 set -euo pipefail
@@ -52,6 +52,7 @@ clamav-daemon
 clamav-freshclam
 curl
 ca-certificates
+gnupg
 gnome-shell-extension-appindicator
 EOF
 
@@ -260,6 +261,7 @@ cat > config/includes.chroot/etc/apt/apt.conf.d/52veilos-unattended <<'EOF'
 Unattended-Upgrade::Origins-Pattern {
   "site=repo.librewolf.net";
   "site=repo.protonvpn.com";
+  "site=updates.signal.org";
 };
 EOF
 
@@ -274,7 +276,7 @@ EOF
 
 cat > config/includes.chroot/etc/dconf/db/local.d/01-veilos-apps <<'EOF'
 [org/gnome/shell]
-favorite-apps=['librewolf.desktop', 'org.gnome.Nautilus.desktop', 'vlc.desktop', 'io.freetubeapp.FreeTube.desktop', 'org.standardnotes.standardnotes.desktop', 'libreoffice-startcenter.desktop', 'org.gnome.Software.desktop']
+favorite-apps=['librewolf.desktop', 'org.gnome.Nautilus.desktop', 'vlc.desktop', 'io.freetubeapp.FreeTube.desktop', 'signal-desktop.desktop', 'chat.simplex.simplex.desktop', 'org.standardnotes.standardnotes.desktop', 'libreoffice-startcenter.desktop', 'org.gnome.Software.desktop']
 EOF
 
 # --- ClamAV with real-time (on-access) scanning ---
@@ -340,6 +342,7 @@ flatpak remote-add --if-not-exists --system flathub https://dl.flathub.org/repo/
 flatpak install --system -y --noninteractive flathub \
   io.freetubeapp.FreeTube \
   org.standardnotes.standardnotes \
+  chat.simplex.simplex \
   || echo "VEILOS-WARN: Flatpak apps (FreeTube / Standard Notes) install failed"
 EOF
 
@@ -377,6 +380,124 @@ EOF
 chmod +x config/hooks/normal/*.hook.chroot
 
 # ================= end of phase 3 (batch 2) =================
+
+# ================= PHASE 3 (batch 3): AsterMail + updater for .deb apps =================
+
+# Updater for apps that ship only a .deb (no apt repository).
+# Each app has a small config file in /usr/share/veilos/apps/*.conf (NAME, PKG, URL).
+cat > config/includes.chroot/usr/local/bin/veilos-app-update <<'EOF'
+#!/bin/sh
+# Updates .deb apps that have no apt repository. Runs as root from a systemd timer.
+for conf in /usr/share/veilos/apps/*.conf; do
+  [ -f "$conf" ] || continue
+  NAME=; PKG=; URL=
+  . "$conf"
+  [ -n "$PKG" ] && [ -n "$URL" ] || continue
+  tmp=$(mktemp -d)
+  if curl -fsSL --max-time 900 -o "$tmp/app.deb" "$URL"; then
+    newpkg=$(dpkg-deb -f "$tmp/app.deb" Package 2>/dev/null)
+    newver=$(dpkg-deb -f "$tmp/app.deb" Version 2>/dev/null)
+    curver=$(dpkg-query -W -f='${Version}' "$PKG" 2>/dev/null)
+    # safety: only install if it is the same package and a newer version
+    if [ "$newpkg" = "$PKG" ] && [ -n "$newver" ] \
+       && dpkg --compare-versions "$newver" gt "${curver:-0}"; then
+      apt-get install -y "$tmp/app.deb" && echo "$NAME updated to $newver"
+    fi
+  fi
+  rm -rf "$tmp"
+done
+EOF
+chmod +x config/includes.chroot/usr/local/bin/veilos-app-update
+
+cat > config/includes.chroot/etc/systemd/system/veilos-app-update.service <<'EOF'
+[Unit]
+Description=Update VEILOS .deb apps
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/veilos-app-update
+EOF
+
+cat > config/includes.chroot/etc/systemd/system/veilos-app-update.timer <<'EOF'
+[Unit]
+Description=Daily check for VEILOS .deb app updates
+
+[Timer]
+OnBootSec=15min
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target
+EOF
+
+cat >> config/hooks/normal/0600-enable-timers.hook.chroot <<'EOF'
+systemctl enable veilos-app-update.timer || true
+EOF
+
+# --- AsterMail (official .deb) ---
+cat > config/hooks/normal/0700-astermail.hook.chroot <<'EOF'
+#!/bin/sh
+mkdir -p /usr/share/veilos/apps
+URL=https://astermail.org/dl/linux-deb
+if curl -fsSL -o /tmp/aster.deb "$URL"; then
+  PKG=$(dpkg-deb -f /tmp/aster.deb Package 2>/dev/null)
+  if [ -n "$PKG" ] && apt-get install -y /tmp/aster.deb; then
+    printf 'NAME=AsterMail\nPKG=%s\nURL=%s\n' "$PKG" "$URL" > /usr/share/veilos/apps/astermail.conf
+  else
+    echo "VEILOS-WARN: AsterMail install failed"
+  fi
+else
+  echo "VEILOS-WARN: AsterMail download failed"
+fi
+rm -f /tmp/aster.deb
+EOF
+
+chmod +x config/hooks/normal/*.hook.chroot
+
+# ================= end of phase 3 (batch 3) =================
+
+# ================= PHASE 3 (batch 4): Signal, Proton Pass, Proton Authenticator =================
+
+# --- Signal Desktop from Signal's official apt repository ---
+cat > config/hooks/normal/0650-signal.hook.chroot <<'EOF'
+#!/bin/sh
+curl -fsSL https://updates.signal.org/desktop/apt/keys.asc | gpg --dearmor > /usr/share/keyrings/signal-desktop-keyring.gpg \
+  && curl -fsSL -o /etc/apt/sources.list.d/signal-desktop.sources https://updates.signal.org/static/desktop/apt/signal-desktop.sources \
+  && apt-get update \
+  && apt-get install -y signal-desktop \
+  || echo "VEILOS-WARN: Signal install failed"
+EOF
+
+# --- Proton Pass + Proton Authenticator (official .deb files, kept updated by veilos-app-update) ---
+cat > config/hooks/normal/0710-proton-debs.hook.chroot <<'EOF'
+#!/bin/sh
+mkdir -p /usr/share/veilos/apps
+for item in \
+  "ProtonPass|https://proton.me/download/PassDesktop/linux/x64/ProtonPass.deb" \
+  "ProtonAuthenticator|https://proton.me/download/authenticator/linux/ProtonAuthenticator.deb"; do
+  NAME=${item%%|*}
+  URL=${item#*|}
+  if curl -fsSL -o "/tmp/$NAME.deb" "$URL"; then
+    PKG=$(dpkg-deb -f "/tmp/$NAME.deb" Package 2>/dev/null)
+    if [ -n "$PKG" ] && apt-get install -y "/tmp/$NAME.deb"; then
+      printf 'NAME=%s\nPKG=%s\nURL=%s\n' "$NAME" "$PKG" "$URL" > "/usr/share/veilos/apps/$NAME.conf"
+    else
+      echo "VEILOS-WARN: $NAME install failed"
+    fi
+  else
+    echo "VEILOS-WARN: $NAME download failed"
+  fi
+  rm -f "/tmp/$NAME.deb"
+done
+EOF
+
+chmod +x config/hooks/normal/*.hook.chroot
+
+# ================= end of phase 3 (batch 4) =================
 
 sudo lb build 2>&1 | tee build.log
 grep -h "VEILOS-WARN" build.log || echo "No VEILOS-WARN: all app installs reported OK"
