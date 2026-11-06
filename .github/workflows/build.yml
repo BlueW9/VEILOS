@@ -22,6 +22,24 @@ jobs:
           docker run --rm --privileged -v "$PWD":/work -w /work debian:stable \
             bash -c "apt-get update && apt-get install -y sudo && chmod +x build-phase1.sh && ./build-phase1.sh"
 
+      - name: Build report
+        if: always()
+        run: |
+          {
+            echo "## VEILOS build report"
+            if [ -f veilos-build/build.log ]; then
+              if grep -q "VEILOS-WARN:" veilos-build/build.log; then
+                echo "### Some apps FAILED to install:"
+                grep -h "VEILOS-WARN:" veilos-build/build.log | sort -u | sed 's/^/- /'
+              else
+                echo "### All apps installed OK (no warnings)"
+              fi
+              ls -lh veilos-build/*.iso 2>/dev/null | awk '{print "- ISO size: " $5}'
+            else
+              echo "No build log found"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload ISO
         uses: actions/upload-artifact@v4
         with:
