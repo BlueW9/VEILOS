@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# VEILOS - Phase 1 + 2 build (Debian Stable + GNOME, Arabic/English)
+# VEILOS - Phase 1 + 2 + 3a build (Debian Stable + GNOME, Arabic/English)
 # Run on Debian/Ubuntu:  chmod +x build-phase1.sh && ./build-phase1.sh
 # License: GPL-3
 set -euo pipefail
@@ -47,6 +47,9 @@ pkexec
 polkitd
 dconf-cli
 apparmor-utils
+clamav
+clamav-daemon
+clamav-freshclam
 EOF
 
 # Telemetry: make sure popularity-contest is never installed
@@ -235,6 +238,77 @@ popularity-contest popularity-contest/participate boolean false
 EOF
 
 # ================= end of phase 2 =================
+
+# ================= PHASE 3 (batch 1): LibreWolf + ClamAV =================
+
+# --- LibreWolf from its official repo (via Debian's extrepo tool) ---
+cat > config/hooks/normal/0150-librewolf.hook.chroot <<'EOF'
+#!/bin/sh
+set -e
+apt-get update
+apt-get install -y extrepo
+extrepo enable librewolf
+apt-get update
+apt-get install -y librewolf
+EOF
+
+# let unattended-upgrades also update LibreWolf automatically
+cat > config/includes.chroot/etc/apt/apt.conf.d/52veilos-unattended <<'EOF'
+Unattended-Upgrade::Origins-Pattern {
+  "site=repo.librewolf.net";
+};
+EOF
+
+# LibreWolf as the default browser
+mkdir -p config/includes.chroot/etc/xdg
+cat > config/includes.chroot/etc/xdg/mimeapps.list <<'EOF'
+[Default Applications]
+text/html=librewolf.desktop
+x-scheme-handler/http=librewolf.desktop
+x-scheme-handler/https=librewolf.desktop
+EOF
+
+cat > config/includes.chroot/etc/dconf/db/local.d/01-veilos-apps <<'EOF'
+[org/gnome/shell]
+favorite-apps=['librewolf.desktop', 'org.gnome.Nautilus.desktop', 'vlc.desktop', 'libreoffice-startcenter.desktop', 'org.gnome.Software.desktop']
+EOF
+
+# --- ClamAV with real-time (on-access) scanning ---
+mkdir -p config/includes.chroot/etc/systemd/system
+cat > config/includes.chroot/etc/systemd/system/clamonacc.service <<'EOF'
+[Unit]
+Description=ClamAV On-Access Scanner
+Requires=clamav-daemon.service
+After=clamav-daemon.service
+
+[Service]
+Type=simple
+ExecStart=/bin/sh -c 'exec "$(command -v clamonacc)" -F --fdpass --log=/var/log/clamav/clamonacc.log'
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > config/hooks/normal/0300-clamav.hook.chroot <<'EOF'
+#!/bin/sh
+cat >> /etc/clamav/clamd.conf <<'CONF'
+
+# VEILOS on-access scanning
+OnAccessIncludePath /home
+OnAccessPrevention yes
+OnAccessExcludeUname clamav
+OnAccessExcludeRootUID yes
+CONF
+# bake in an initial signature database (needs network at build time)
+freshclam || true
+systemctl enable clamav-daemon clamav-freshclam clamonacc || true
+EOF
+
+chmod +x config/hooks/normal/*.hook.chroot
+
+# ================= end of phase 3 (batch 1) =================
 
 sudo lb build 2>&1 | tee build.log
 echo "Done. ISO: $(ls *.iso 2>/dev/null)"
