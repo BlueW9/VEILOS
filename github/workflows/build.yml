@@ -1,0 +1,38 @@
+name: Build VEILOS ISO
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 1 */6 *"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Build ISO inside Debian Stable
+        run: |
+          docker run --rm --privileged -v "$PWD":/work -w /work debian:stable \
+            bash -c "apt-get update && apt-get install -y sudo && chmod +x build-phase1.sh && ./build-phase1.sh"
+
+      - name: Upload ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: veilos-iso
+          path: veilos-build/*.iso
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: veilos-build/build.log
