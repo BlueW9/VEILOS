@@ -75,11 +75,16 @@ EOF
 # Branding: OS name + logo (put your logo at ../assets/logo.jpg)
 mkdir -p config/includes.chroot/etc config/includes.chroot/usr/share/veilos
 cat > config/includes.chroot/etc/os-release <<'EOF'
-PRETTY_NAME="VEILOS"
+PRETTY_NAME="VEILOS 26.11 (Sitar)"
 NAME="VEILOS"
-ID=veilos
-ID_LIKE=debian
-HOME_URL="https://github.com/BlueW9"
+VERSION_ID="13"
+VERSION="26.11 (Sitar)"
+VERSION_CODENAME=trixie
+ID=debian
+HOME_URL="https://github.com/BlueW9/VEILOS"
+VEILOS_VERSION="26.11"
+VEILOS_CODENAME="Sitar"
+VEILOS_STAGE="alpha"
 EOF
 for f in ../logo.jpg ../assets/logo.jpg; do
   [ -f "$f" ] && cp "$f" config/includes.chroot/usr/share/veilos/logo.jpg && break
@@ -551,5 +556,7 @@ for f in usr/share/backgrounds/veilos/wallpaper.png usr/share/pixmaps/veilos-log
          usr/local/bin/veilos-dns usr/local/bin/veilos-app-update; do
   [ -e "chroot/$f" ] || warn "file missing in image: $f"
 done
+grep -q '^VERSION_CODENAME=trixie' chroot/etc/os-release 2>/dev/null \
+  || warn "os-release VERSION_CODENAME is not trixie (automatic security updates could break)"
 grep -h "VEILOS-WARN" build.log || echo "No VEILOS-WARN: all app installs reported OK"
 echo "Done. ISO: $(ls *.iso 2>/dev/null)"
