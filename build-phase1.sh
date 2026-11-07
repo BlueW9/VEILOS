@@ -75,16 +75,14 @@ EOF
 # Branding: OS name + logo (put your logo at ../assets/logo.jpg)
 mkdir -p config/includes.chroot/etc config/includes.chroot/usr/share/veilos
 cat > config/includes.chroot/etc/os-release <<'EOF'
-PRETTY_NAME="VEILOS 26.11 (Sitar)"
+PRETTY_NAME="VEILOS 26.11"
 NAME="VEILOS"
 VERSION_ID="13"
-VERSION="26.11 (Sitar)"
+VERSION="26.11"
 VERSION_CODENAME=trixie
 ID=debian
 HOME_URL="https://github.com/BlueW9/VEILOS"
 VEILOS_VERSION="26.11"
-VEILOS_CODENAME="Sitar"
-VEILOS_STAGE="alpha"
 EOF
 for f in ../logo.jpg ../assets/logo.jpg; do
   [ -f "$f" ] && cp "$f" config/includes.chroot/usr/share/veilos/logo.jpg && break
