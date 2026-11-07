@@ -522,5 +522,34 @@ EOF
 # ================= end of phase 4 =================
 
 sudo lb build 2>&1 | tee build.log
+
+# ---------- verify what actually ended up inside the image ----------
+# Any problem is appended to build.log as a VEILOS-WARN line, so the
+# GitHub run summary shows it.
+warn() { echo "VEILOS-WARN: $1" | tee -a build.log; }
+chk_pkg() {
+  c=$(grep -A8 "^Package: $1\$" chroot/var/lib/dpkg/status 2>/dev/null | grep -c "^Status: install ok installed" || true)
+  [ "${c:-0}" -ge 1 ] || warn "package not installed in image: $1"
+}
+if [ ! -d chroot ]; then warn "verify: chroot directory not found, could not check image contents"; fi
+for p in librewolf signal-desktop proton-vpn-gnome-desktop vlc libreoffice-core clamav-daemon \
+         gnome-software nftables unattended-upgrades systemd-resolved flatpak; do
+  chk_pkg "$p"
+done
+n=$(ls chroot/usr/share/veilos/apps/*.conf 2>/dev/null | wc -l)
+[ "$n" -eq 3 ] || warn "expected 3 .deb apps (AsterMail, ProtonPass, ProtonAuthenticator), found $n"
+for f in chroot/usr/share/veilos/apps/*.conf; do
+  [ -f "$f" ] || continue
+  chk_pkg "$(sed -n 's/^PKG=//p' "$f")"
+done
+for id in io.freetubeapp.FreeTube org.standardnotes.standardnotes chat.simplex.simplex; do
+  [ -d "chroot/var/lib/flatpak/app/$id" ] || warn "flatpak app missing in image: $id"
+done
+for f in usr/share/backgrounds/veilos/wallpaper.png usr/share/pixmaps/veilos-logo.png \
+         etc/nftables.conf etc/sysctl.d/99-veilos-hardening.conf \
+         etc/systemd/resolved.conf.d/10-veilos-quad9.conf etc/dconf/db/local \
+         usr/local/bin/veilos-dns usr/local/bin/veilos-app-update; do
+  [ -e "chroot/$f" ] || warn "file missing in image: $f"
+done
 grep -h "VEILOS-WARN" build.log || echo "No VEILOS-WARN: all app installs reported OK"
 echo "Done. ISO: $(ls *.iso 2>/dev/null)"
