@@ -2,8 +2,20 @@ name: Build VEILOS ISO
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag. Clear this field to only build without publishing."
+        required: false
+        default: "26.11-alpha"
+      release_title:
+        description: "Release title"
+        required: false
+        default: 'VEILOS 26.11 "Sitar" (Alpha)'
   schedule:
     - cron: "0 3 1 */6 *"
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -54,3 +66,47 @@ jobs:
         with:
           name: build-log
           path: veilos-build/build.log
+
+      - name: Publish pre-release
+        if: ${{ github.event.inputs.release_tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.release_tag }}
+          TITLE: ${{ github.event.inputs.release_title }}
+        run: |
+          cd veilos-build
+          if grep -q "VEILOS-WARN:" build.log; then
+            echo "Refusing to publish: the build reported warnings."
+            exit 1
+          fi
+          ISO="veilos-$TAG-amd64.iso"
+          sudo mv "$(ls *.iso | head -n1)" "$ISO"
+          sha256sum "$ISO" > SHA256SUMS.txt
+          sudo split -b 1900M -d "$ISO" "$ISO.part"
+          cat > notes.md <<NOTES
+          ## $TITLE
+
+          **Early release. Not fully tested. Do not use for sensitive work yet.**
+          نسخة مبكرة لم تُختبر بالكامل. لا تستخدمها في أعمال حساسة بعد.
+
+          ### Download and join the parts
+          GitHub limits each file to 2 GB, so the ISO is split into parts.
+
+          Linux / macOS:
+              cat $ISO.part* > $ISO
+              sha256sum -c SHA256SUMS.txt
+
+          Windows (Command Prompt, in the download folder):
+              copy /b $ISO.part* $ISO
+              certutil -hashfile $ISO SHA256
+
+          The SHA256 value must match SHA256SUMS.txt. Then write the ISO to a USB drive (for example with Rufus in DD mode) and boot the Live option first.
+
+          ### Known limitations
+          - Never booted in automated tests yet; please report problems as Issues.
+          - Secure Boot is not configured: disable it in the BIOS if the USB does not boot.
+          - AsterMail, Proton Pass and Proton Authenticator update through a small HTTPS updater, which is weaker than a signed apt repository.
+          - Full-disk encryption is available in the installer but not enabled automatically.
+          NOTES
+          sed -i 's/^          //' notes.md
+          gh release create "$TAG" --prerelease --title "$TITLE" --notes-file notes.md SHA256SUMS.txt "$ISO".part*
